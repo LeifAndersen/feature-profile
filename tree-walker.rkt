@@ -25,13 +25,14 @@
     (orig
      ;; errortrace had some code involving namespace-module-registry and
      ;; namespace-base-phase, which I don't think I need.
-     (let ([e2 (expand-syntax
+     (let* ([e2 (expand-syntax
                     (if (syntax? e)
                         e
                         (namespace-syntax-introduce
-                         (datum->syntax #f e))))])
-           (for/fold ([res e2])
-               ([k keys])
+                         (datum->syntax #f e))))]
+            [e3 (code-walk e2 #f functions-to-mark #:begin-with "feature-profile:")])
+           (for/fold ([res e3])
+                     ([k keys])
              (code-walk res k functions-to-mark)))
      immediate-eval?)))
 
@@ -60,7 +61,38 @@
 ;;   to fix: code-walk should take a phase arg, then use literal-sets at the
 ;;     right phase (o/w won't match properly), and insert w-c-ms (and requires
 ;;      to bind it) at the right phase
-(define (code-walk stx key functions-to-mark)
+(define (code-walk stx-in key functions-to-mark
+                   #:begin-with [begin-with #f]
+                   #:begin-explored [begin-explored-in (set)])
+
+  ;; Set of syntax-property-keys that begin with begin-with
+  ;;    and not yet explored.
+  (define keys (if begin-with
+                    (filter (λ (key)
+                              (define begin-len (string-length begin-with))
+                              (define keystr (symbol->string key))
+                              (define key-len (string-length keystr))
+                              (define key-start (if (key-len . < . begin-len)
+                                                    keystr
+                                                    (substring keystr
+                                                               0 begin-len)))
+                              (and (not (set-member? begin-explored-in key))
+                                   (equal? key-start begin-with)))
+                            (syntax-property-symbol-keys stx-in))
+                    '()))
+
+  (define begin-explored (set-union begin-explored-in
+                                    (list->set keys)))
+
+  ;; Expand all found syntax-properties that begin with begin-with
+  (define stx
+    (if (null? keys)
+        stx-in
+        (for/fold ([res stx-in])
+                  ([k keys])
+          (code-walk res k functions-to-mark #:begin-with begin-with
+                     #:begin-explored begin-explored))))
+
   (define mark? (syntax-property stx key))
   ;; default payload, source location
   ;; make sure this doesn't allocate (we quote the vector, so we're ok)
@@ -84,7 +116,8 @@
     (if mark?
         (mark/payload to-mark payload)
         (add-props stx (syntax/loc stx to-mark))))
-  (define (recur x) (code-walk x key functions-to-mark))
+  (define (recur x) (code-walk x key functions-to-mark #:begin-with begin-with
+                               #:begin-explored begin-explored))
   (define disarmed (disarm stx))
   (syntax-parse disarmed
     #:literal-sets (kernel-literals)
